@@ -65,6 +65,7 @@ Follow these steps to get the playground running locally.
 
 *   [Node.js](https://nodejs.org/) (Version 20 or later required)
 *   [npm](https://www.npmjs.com/), [yarn](https://yarnpkg.com/), [pnpm](https://pnpm.io/), or [bun](https://bun.sh/)
+*   **OR** [Docker](https://www.docker.com/) for containerized deployment
 
 ### 1. Set Up API Key 🟢
 
@@ -158,6 +159,53 @@ npm run dev
 ### 4. Open the Playground 🟢
 
 Open [http://localhost:3000](http://localhost:3000) in your web browser. You should now be able to use the gpt-image-1 Playground!
+
+## 🐳 Docker Deployment
+
+You can run this application using Docker for easy deployment and consistent environments.
+
+### Docker Build and Run
+
+1. **Build the Docker image:**
+   ```bash
+   docker build -t nextjs-gpt-image-playground .
+   ```
+
+2. **Run the container:**
+   ```bash
+   docker run -d \
+     --name gpt-image-playground \
+     -p 3000:3000 \
+     -e OPENAI_API_KEY=your_openai_api_key_here \
+     -e OPENAI_API_BASE_URL=https://api.openai.com/v1 \
+     nextjs-gpt-image-playground
+   ```
+
+3. **Access the application:**
+   Open [http://localhost:3000](http://localhost:3000) in your web browser.
+
+### Docker Features
+
+- **Multi-stage build:** Optimized for production with minimal image size (~200MB)
+- **Security:** Runs as non-root user with proper permissions
+- **Environment configuration:** Easy configuration through environment variables
+- **Standalone deployment:** No external dependencies or volume mounting required
+
+### Docker Management Commands
+
+```bash
+# View container logs
+docker logs -f gpt-image-playground
+
+# Stop the container
+docker stop gpt-image-playground
+
+# Remove the container
+docker rm gpt-image-playground
+
+# Rebuild the image
+docker build -t nextjs-gpt-image-playground . --no-cache
+```
 
 ## 🤝 Contributing
 
