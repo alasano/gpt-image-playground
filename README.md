@@ -1,8 +1,8 @@
 # <img src="./public/favicon.svg" alt="Project Logo" width="30" height="30" style="vertical-align: middle; margin-right: 8px;"> GPT Image Playground
 
-A web-based playground to interact with OpenAI's GPT image models (`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, and `gpt-image-2`) for generating and editing images.
+A web-based playground to interact with OpenAI's GPT image models (`gpt-image-2.6-flare`, `gpt-image-2.6-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, and `gpt-image-2`) for generating and editing images.
 
-> **Note:** The playground defaults to `gpt-image-2.5-flare`, OpenAI's fast default model. All three models support arbitrary resolutions up to 4K (with constraint validation) and transparent backgrounds (preview on `gpt-image-2`). The `gpt-image-2.5` models add the `xhigh` and `max` quality tiers. Retired models (`gpt-image-1`, `gpt-image-1-mini`, `gpt-image-1.5`) can no longer be selected, but images generated with them remain visible in the history with their original cost breakdown.
+> **Note:** The playground defaults to `gpt-image-2.6-flare`, OpenAI's fast default model. All five models support arbitrary resolutions up to 4K (with constraint validation), transparent backgrounds (preview on `gpt-image-2`) and markup-guided edits. The `gpt-image-2.5` and `gpt-image-2.6` models add the `xhigh` and `max` quality tiers. The `gpt-image-2.6` models add the `complexity` setting, animated GIF output and SVG output. Retired models (`gpt-image-1`, `gpt-image-1-mini`, `gpt-image-1.5`) can no longer be selected, but images generated with them remain visible in the history with their original cost breakdown.
 
 <p align="center">
   <img src="./readme-images/interface.jpg" alt="Interface" width="900"/>
@@ -11,10 +11,12 @@ A web-based playground to interact with OpenAI's GPT image models (`gpt-image-2.
 ## ✨ Features
 
 *   **🎨 Image Generation Mode:** Create new images from text prompts.
-*   **🖌️ Image Editing Mode:** Modify existing images (up to 16 source images per request) based on text prompts and optional masks.
-*   **⚙️ Full API Parameter Control:** Access and adjust all relevant parameters supported by the OpenAI Images API directly through the UI, in both generate and edit mode (size, quality including the `xhigh`/`max` tiers, output format, compression, background, moderation, number of images).
+*   **🖌️ Image Editing Mode:** Modify existing images (up to 16 source images per request) based on text prompts and an optional mask or markup.
+*   **⚙️ Full API Parameter Control:** Access and adjust all relevant parameters supported by the OpenAI Images API directly through the UI, in both generate and edit mode (size, quality including the `xhigh`/`max` tiers, complexity, output format, compression, background, moderation, number of images).
 *   **📐 Custom Resolutions:** Pick from the 2048×2048, 3072×2048 or 2048×3072 presets or enter an arbitrary Width × Height with live validation against the model constraints (multiples of 16, max 3840px per edge, ≤ 3:1 aspect ratio, 655,360 to 8,294,400 total pixels).
-*   **🎭 Integrated Masking Tool:** Easily create or upload masks directly within the editing mode to specify areas for modification. Draw directly on the image to generate a mask.
+*   **🎞️ Animated GIF Output (`gpt-image-2.6`):** Generate GIFs from a prompt or animate an uploaded image in edit mode, with 2 to 16 frames and a per-frame duration of 20 to 2000 ms. Custom frame sizes are validated against the API's sheet limits: frames are rendered tiled into one image (4×2 or 2×4 for up to 8 frames, 3×3 for 9, 4×4 for 10 or more) that must meet the still-image constraints, and the number of images × sheet pixels must stay within 16,777,216.
+*   **✒️ SVG Output (`gpt-image-2.6`, generate mode):** The image model draws a reference image and a chat model (`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6.1-terra` or `gpt-6-luna`, with an optional reasoning effort) writes it as SVG. One image per request; the writer's token cost is included in the cost breakdown.
+*   **🎭 Integrated Masking & Markup Tool:** Easily create or upload masks directly within the editing mode to specify areas for modification. Draw directly on the image to generate a mask, or switch to Markup to circle or sketch where a change should go and describe it in the prompt (markup can't be combined with a mask, and masks can't be used with GIF output).
 
      > ⚠️ Please note that the GPT Image models' masking feature does not guarantee 100% control at this time. <br>1) [It's a known & acknowledged model limitation.](https://community.openai.com/t/gpt-image-1-problems-with-mask-edits/1240639/37) <br>2) [OpenAI are looking to address it in a future update.](https://community.openai.com/t/gpt-image-1-problems-with-mask-edits/1240639/41)
 <p align="center">

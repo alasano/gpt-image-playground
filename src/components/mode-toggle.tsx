@@ -1,18 +1,16 @@
 'use client';
 
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import type { ImageMode } from '@/lib/models';
 
 type ModeToggleProps = {
-    currentMode: 'generate' | 'edit';
-    onModeChange: (mode: 'generate' | 'edit') => void;
+    currentMode: ImageMode;
+    onModeChange: (mode: ImageMode) => void;
 };
 
 export function ModeToggle({ currentMode, onModeChange }: ModeToggleProps) {
     return (
-        <Tabs
-            value={currentMode}
-            onValueChange={(value) => onModeChange(value as 'generate' | 'edit')}
-            className='w-auto'>
+        <Tabs value={currentMode} onValueChange={(value) => onModeChange(value as ImageMode)} className='w-auto'>
             <TabsList className='grid h-auto grid-cols-2 gap-1 rounded-md border-none bg-transparent p-0'>
                 <TabsTrigger
                     value='generate'

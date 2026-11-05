@@ -3,9 +3,12 @@ import {
     IMAGE_OUTPUT_FORMATS,
     isGptImageModel,
     type ImageBackground,
+    type ImageComplexity,
+    type ImageMode,
     type ImageModeration,
     type ImageOutputFormat,
-    type ImageQuality
+    type ImageQuality,
+    type SvgReasoningEffort
 } from '@/lib/models';
 import crypto from 'crypto';
 import fs from 'fs/promises';
@@ -59,6 +62,7 @@ function readImageParams(formData: FormData) {
     const n = parseInt((formData.get('n') as string) || '1', 10);
     const output_format = validateOutputFormat(formData.get('output_format'));
     const compression = parseInt(formData.get('output_compression') as string, 10);
+    const complexity = formData.get('complexity') as ImageComplexity | null;
     return {
         n: Math.max(1, Math.min(n || 1, 10)),
         size: (formData.get('size') as string) || 'auto',
@@ -66,10 +70,28 @@ function readImageParams(formData: FormData) {
         output_format,
         background: (formData.get('background') as ImageBackground | null) || 'auto',
         moderation: (formData.get('moderation') as ImageModeration | null) || 'auto',
+        ...(complexity ? { complexity } : {}),
         ...((output_format === 'jpeg' || output_format === 'webp') && compression >= 0 && compression <= 100
             ? { output_compression: compression }
+            : {}),
+        ...(output_format === 'gif'
+            ? {
+                  frame_count: parseInt(formData.get('frame_count') as string, 10),
+                  frame_duration_ms: parseInt(formData.get('frame_duration_ms') as string, 10)
+              }
             : {})
     };
+}
+
+// `moderation_details` is an optional field of the API error body for blocked requests.
+function moderationSuffix(error: unknown): string {
+    if (!(error instanceof OpenAI.APIError)) return '';
+    const details = (
+        error.error as { moderation_details?: { moderation_stage?: string; categories?: string[] } } | undefined
+    )?.moderation_details;
+    if (!details) return '';
+    const categories = details.categories?.length ? `: ${details.categories.join(', ')}` : '';
+    return ` (blocked at the ${details.moderation_stage ?? 'unknown'} stage${categories})`;
 }
 
 // The SDK's ImageEditParams type omits `moderation`, but the edits endpoint accepts it (documented in the API
@@ -146,7 +168,7 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        const mode = formData.get('mode') as 'generate' | 'edit' | null;
+        const mode = formData.get('mode') as ImageMode | null;
         const prompt = formData.get('prompt') as string | null;
         const model = formData.get('model') || DEFAULT_GPT_IMAGE_MODEL;
 
@@ -159,8 +181,7 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: `Unsupported model: ${String(model)}` }, { status: 400 });
         }
 
-        const imageParams = readImageParams(formData);
-        const fileExtension = imageParams.output_format;
+        const { output_format, ...sharedParams } = readImageParams(formData);
 
         // Check for streaming mode
         const streamEnabled = formData.get('stream') === 'true';
@@ -169,7 +190,19 @@ export async function POST(request: NextRequest) {
         let result: OpenAI.Images.ImagesResponse;
 
         if (mode === 'generate') {
-            const baseParams: OpenAI.Images.ImageGenerateParams = { model, prompt, ...imageParams };
+            const svgEffort = formData.get('svg_reasoning_effort') as SvgReasoningEffort | null;
+            const baseParams: OpenAI.Images.ImageGenerateParams = {
+                model,
+                prompt,
+                ...sharedParams,
+                output_format,
+                ...(output_format === 'svg' && {
+                    svg: {
+                        model: formData.get('svg_model') as string,
+                        ...(svgEffort && { reasoning: { effort: svgEffort } })
+                    }
+                })
+            };
 
             // Handle streaming mode for generation
             if (streamEnabled) {
@@ -208,7 +241,7 @@ export async function POST(request: NextRequest) {
                                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(partialEvent)}\n\n`));
                                 } else if (event.type === 'image_generation.completed') {
                                     const currentIndex = imageIndex;
-                                    const filename = `${timestamp}-${currentIndex}.${fileExtension}`;
+                                    const filename = `${timestamp}-${currentIndex}.${output_format}`;
 
                                     // Save to filesystem if in fs mode
                                     if (effectiveStorageMode === 'fs' && event.b64_json) {
@@ -221,7 +254,7 @@ export async function POST(request: NextRequest) {
                                     const imageData = {
                                         filename,
                                         b64_json: event.b64_json || '',
-                                        output_format: fileExtension,
+                                        output_format,
                                         ...(effectiveStorageMode === 'fs' ? { path: `/api/image/${filename}` } : {})
                                     };
                                     completedImages.push(imageData);
@@ -232,7 +265,7 @@ export async function POST(request: NextRequest) {
                                         filename,
                                         b64_json: event.b64_json,
                                         path: effectiveStorageMode === 'fs' ? `/api/image/${filename}` : undefined,
-                                        output_format: fileExtension
+                                        output_format
                                     };
                                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(completedEvent)}\n\n`));
 
@@ -254,7 +287,10 @@ export async function POST(request: NextRequest) {
                             console.error('Streaming error:', error);
                             const errorEvent: StreamingEvent = {
                                 type: 'error',
-                                error: error instanceof Error ? error.message : 'Streaming error occurred'
+                                error:
+                                    error instanceof Error
+                                        ? error.message + moderationSuffix(error)
+                                        : 'Streaming error occurred'
                             };
                             controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorEvent)}\n\n`));
                             controller.close();
@@ -286,13 +322,17 @@ export async function POST(request: NextRequest) {
             }
 
             const maskFile = formData.get('mask') as File | null;
+            const markupFile = formData.get('markup') as File | null;
 
             const baseEditParams: EditParams = {
                 model,
                 prompt,
                 image: imageFiles,
-                ...imageParams,
-                ...(maskFile ? { mask: maskFile } : {})
+                ...sharedParams,
+                // The edit form never offers SVG.
+                output_format: output_format as Exclude<ImageOutputFormat, 'svg'>,
+                ...(maskFile ? { mask: maskFile } : {}),
+                ...(markupFile ? { markup: markupFile } : {})
             };
 
             // Handle streaming mode for editing
@@ -306,7 +346,8 @@ export async function POST(request: NextRequest) {
                 console.log('Calling OpenAI edit with streaming, params:', {
                     ...streamEditParams,
                     image: `[${imageFiles.map((f) => f.name).join(', ')}]`,
-                    mask: maskFile ? maskFile.name : 'N/A'
+                    mask: maskFile ? maskFile.name : 'N/A',
+                    markup: markupFile ? markupFile.name : 'N/A'
                 });
 
                 const stream = await openai.images.edit(streamEditParams);
@@ -338,7 +379,7 @@ export async function POST(request: NextRequest) {
                                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(partialEvent)}\n\n`));
                                 } else if (event.type === 'image_edit.completed') {
                                     const currentIndex = imageIndex;
-                                    const filename = `${timestamp}-${currentIndex}.${fileExtension}`;
+                                    const filename = `${timestamp}-${currentIndex}.${output_format}`;
 
                                     // Save to filesystem if in fs mode
                                     if (effectiveStorageMode === 'fs' && event.b64_json) {
@@ -351,7 +392,7 @@ export async function POST(request: NextRequest) {
                                     const imageData = {
                                         filename,
                                         b64_json: event.b64_json || '',
-                                        output_format: fileExtension,
+                                        output_format,
                                         ...(effectiveStorageMode === 'fs' ? { path: `/api/image/${filename}` } : {})
                                     };
                                     completedImages.push(imageData);
@@ -362,7 +403,7 @@ export async function POST(request: NextRequest) {
                                         filename,
                                         b64_json: event.b64_json,
                                         path: effectiveStorageMode === 'fs' ? `/api/image/${filename}` : undefined,
-                                        output_format: fileExtension
+                                        output_format
                                     };
                                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(completedEvent)}\n\n`));
 
@@ -384,7 +425,10 @@ export async function POST(request: NextRequest) {
                             console.error('Streaming edit error:', error);
                             const errorEvent: StreamingEvent = {
                                 type: 'error',
-                                error: error instanceof Error ? error.message : 'Streaming error occurred'
+                                error:
+                                    error instanceof Error
+                                        ? error.message + moderationSuffix(error)
+                                        : 'Streaming error occurred'
                             };
                             controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorEvent)}\n\n`));
                             controller.close();
@@ -404,7 +448,8 @@ export async function POST(request: NextRequest) {
             console.log('Calling OpenAI edit with params:', {
                 ...baseEditParams,
                 image: `[${imageFiles.map((f) => f.name).join(', ')}]`,
-                mask: maskFile ? maskFile.name : 'N/A'
+                mask: maskFile ? maskFile.name : 'N/A',
+                markup: markupFile ? markupFile.name : 'N/A'
             });
             result = await openai.images.edit(baseEditParams);
         } else {
@@ -426,7 +471,7 @@ export async function POST(request: NextRequest) {
                 }
                 const buffer = Buffer.from(imageData.b64_json, 'base64');
                 const timestamp = Date.now();
-                const filename = `${timestamp}-${index}.${fileExtension}`;
+                const filename = `${timestamp}-${index}.${output_format}`;
 
                 if (effectiveStorageMode === 'fs') {
                     const filepath = path.join(outputDir, filename);
@@ -439,7 +484,7 @@ export async function POST(request: NextRequest) {
                 const imageResult: { filename: string; b64_json: string; path?: string; output_format: string } = {
                     filename: filename,
                     b64_json: imageData.b64_json,
-                    output_format: fileExtension
+                    output_format
                 };
 
                 if (effectiveStorageMode === 'fs') {
@@ -452,7 +497,7 @@ export async function POST(request: NextRequest) {
 
         console.log(`All images processed. Mode: ${effectiveStorageMode}`);
 
-        return NextResponse.json({ images: savedImagesData, usage: result.usage });
+        return NextResponse.json({ images: savedImagesData, usage: result.usage, svg_usage: result.svg_usage });
     } catch (error: unknown) {
         console.error('Error in /api/images:', error);
 
@@ -473,6 +518,6 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        return NextResponse.json({ error: errorMessage }, { status });
+        return NextResponse.json({ error: errorMessage + moderationSuffix(error) }, { status });
     }
 }

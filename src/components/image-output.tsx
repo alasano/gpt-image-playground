@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { EDIT_INPUT_FORMATS, type ImageMode, type ImageOutputFormat } from '@/lib/models';
 import { cn } from '@/lib/utils';
 import { Loader2, Send, Grid } from 'lucide-react';
 import Image from 'next/image';
@@ -28,7 +29,7 @@ type ImageOutputProps = {
     isLoading: boolean;
     loadingStartTime: number | null;
     onSendToEdit: (filename: string) => void;
-    currentMode: 'generate' | 'edit';
+    currentMode: ImageMode;
     baseImagePreviewUrl: string | null;
     streamingPreviewImages?: Map<number, string>;
 };
@@ -61,7 +62,12 @@ export function ImageOutput({
 
     const showCarousel = imageBatch && imageBatch.length > 1;
     const isSingleImageView = typeof viewMode === 'number';
-    const canSendToEdit = !isLoading && isSingleImageView && imageBatch && imageBatch[viewMode];
+    const selectedImage = isSingleImageView && imageBatch ? imageBatch[viewMode] : undefined;
+    // Filenames end in the output format.
+    const canSendToEdit =
+        !isLoading &&
+        !!selectedImage &&
+        EDIT_INPUT_FORMATS.includes(selectedImage.filename.split('.').pop() as ImageOutputFormat);
 
     return (
         <div className='flex h-full min-h-[300px] w-full flex-col items-center justify-between gap-4 overflow-hidden rounded-lg border border-white/20 bg-black p-4'>

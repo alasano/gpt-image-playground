@@ -1,6 +1,6 @@
 'use client';
 
-import { EditingForm, type EditingFormData } from '@/components/editing-form';
+import { EditingForm, type EditRegionMode, type EditingFormData } from '@/components/editing-form';
 import { GenerationForm, type GenerationFormData } from '@/components/generation-form';
 import { HistoryPanel } from '@/components/history-panel';
 import { ImageOutput } from '@/components/image-output';
@@ -9,16 +9,30 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { calculateApiCost, type ApiUsage, type CostDetails } from '@/lib/cost-utils';
 import { db, type ImageRecord } from '@/lib/db';
 import {
+    DEFAULT_COMPLEXITY,
     DEFAULT_GPT_IMAGE_MODEL,
+    DEFAULT_SVG_WRITER_MODEL,
+    EDIT_INPUT_FORMATS,
+    GIF_FRAME_COUNT,
+    GIF_FRAME_DURATION_MS,
     MAX_EDIT_IMAGES,
+    MODEL_CAPABILITIES,
+    getMimeType,
+    getStreamingBlockedReason,
+    type GptImageModel,
     type HistoryGptImageModel,
     type ImageBackground,
+    type ImageComplexity,
+    type ImageMode,
     type ImageModeration,
     type ImageOutputFormat,
-    type ImageQuality
+    type ImageQuality,
+    type SvgReasoningEffort,
+    type SvgWriterModel
 } from '@/lib/models';
 import { getPresetDimensions } from '@/lib/size-utils';
 import { useLiveQuery } from 'dexie-react-hooks';
+import type { ImagesResponse } from 'openai/resources/images';
 import * as React from 'react';
 
 type HistoryImage = {
@@ -34,11 +48,16 @@ export type HistoryMetadata = {
     background: ImageBackground;
     moderation: ImageModeration;
     prompt: string;
-    mode: 'generate' | 'edit';
+    mode: ImageMode;
     costDetails: CostDetails | null;
     output_format?: ImageOutputFormat;
     /** Absent on entries written before the field existed; those were all produced by gpt-image-1. */
     model?: HistoryGptImageModel;
+    /** Only recorded for models that accept it. */
+    complexity?: ImageComplexity;
+    /** Only recorded for GIF output. */
+    frame_count?: number;
+    frame_duration_ms?: number;
 };
 
 type DrawnPoint = {
@@ -70,12 +89,28 @@ console.log(
 type ApiImageResponseItem = {
     filename: string;
     b64_json?: string;
-    output_format: string;
+    output_format: ImageOutputFormat;
     path?: string;
 };
 
+const EDIT_INPUT_MIME_TYPES = EDIT_INPUT_FORMATS.map(getMimeType);
+
+/** Request fields that only some models or formats accept; also recorded in history. */
+function getConditionalParams(
+    model: GptImageModel,
+    format: ImageOutputFormat,
+    complexity: ImageComplexity,
+    frameCount: number,
+    frameDurationMs: number
+) {
+    return {
+        ...(MODEL_CAPABILITIES[model].complexity && { complexity }),
+        ...(format === 'gif' && { frame_count: frameCount, frame_duration_ms: frameDurationMs })
+    };
+}
+
 export default function HomePage() {
-    const [mode, setMode] = React.useState<'generate' | 'edit'>('generate');
+    const [mode, setMode] = React.useState<ImageMode>('generate');
     const [isPasswordRequiredByBackend, setIsPasswordRequiredByBackend] = React.useState<boolean | null>(null);
     const [clientPasswordHash, setClientPasswordHash] = React.useState<string | null>(null);
     const [isLoading, setIsLoading] = React.useState(false);
@@ -108,15 +143,19 @@ export default function HomePage() {
     const [editCompression, setEditCompression] = React.useState([100]);
     const [editBackground, setEditBackground] = React.useState<EditingFormData['background']>('auto');
     const [editModeration, setEditModeration] = React.useState<EditingFormData['moderation']>('auto');
+    const [editComplexity, setEditComplexity] = React.useState<ImageComplexity>(DEFAULT_COMPLEXITY);
+    const [editFrameCount, setEditFrameCount] = React.useState<number>(GIF_FRAME_COUNT.default);
+    const [editFrameDurationMs, setEditFrameDurationMs] = React.useState<number>(GIF_FRAME_DURATION_MS.default);
+    const [editRegionMode, setEditRegionMode] = React.useState<EditRegionMode>('mask');
     const [editBrushSize, setEditBrushSize] = React.useState([20]);
-    const [editShowMaskEditor, setEditShowMaskEditor] = React.useState(false);
-    const [editGeneratedMaskFile, setEditGeneratedMaskFile] = React.useState<File | null>(null);
-    const [editIsMaskSaved, setEditIsMaskSaved] = React.useState(false);
+    const [editShowRegionEditor, setEditShowRegionEditor] = React.useState(false);
+    const [editRegionFile, setEditRegionFile] = React.useState<File | null>(null);
+    const [editIsRegionSaved, setEditIsRegionSaved] = React.useState(false);
     const [editOriginalImageSize, setEditOriginalImageSize] = React.useState<{ width: number; height: number } | null>(
         null
     );
     const [editDrawnPoints, setEditDrawnPoints] = React.useState<DrawnPoint[]>([]);
-    const [editMaskPreviewUrl, setEditMaskPreviewUrl] = React.useState<string | null>(null);
+    const [editRegionPreviewUrl, setEditRegionPreviewUrl] = React.useState<string | null>(null);
 
     const [genModel, setGenModel] = React.useState<GenerationFormData['model']>(DEFAULT_GPT_IMAGE_MODEL);
     const [genPrompt, setGenPrompt] = React.useState('');
@@ -129,6 +168,11 @@ export default function HomePage() {
     const [genCompression, setGenCompression] = React.useState([100]);
     const [genBackground, setGenBackground] = React.useState<GenerationFormData['background']>('auto');
     const [genModeration, setGenModeration] = React.useState<GenerationFormData['moderation']>('auto');
+    const [genComplexity, setGenComplexity] = React.useState<ImageComplexity>(DEFAULT_COMPLEXITY);
+    const [genFrameCount, setGenFrameCount] = React.useState<number>(GIF_FRAME_COUNT.default);
+    const [genFrameDurationMs, setGenFrameDurationMs] = React.useState<number>(GIF_FRAME_DURATION_MS.default);
+    const [genSvgModel, setGenSvgModel] = React.useState<SvgWriterModel>(DEFAULT_SVG_WRITER_MODEL);
+    const [genSvgEffort, setGenSvgEffort] = React.useState<SvgReasoningEffort | null>(null);
 
     const [editModel, setEditModel] = React.useState<EditingFormData['model']>(DEFAULT_GPT_IMAGE_MODEL);
 
@@ -282,7 +326,7 @@ export default function HomePage() {
 
             const items = event.clipboardData.items;
             for (let i = 0; i < items.length; i++) {
-                if (items[i].type.indexOf('image') !== -1) {
+                if (EDIT_INPUT_MIME_TYPES.includes(items[i].type)) {
                     const file = items[i].getAsFile();
                     if (file) {
                         event.preventDefault();
@@ -339,21 +383,16 @@ export default function HomePage() {
         setIsPasswordDialogOpen(true);
     };
 
-    const getMimeTypeFromFormat = (format: string): string => {
-        if (format === 'jpeg') return 'image/jpeg';
-        if (format === 'webp') return 'image/webp';
-
-        return 'image/png';
-    };
-
     // Shared tail for streamed and non-streamed responses: persist blobs (indexeddb mode), show the batch, record history.
     const processApiImages = async (
         images: ApiImageResponseItem[],
         usage: ApiUsage | undefined,
-        durationMs: number
+        durationMs: number,
+        svgUsage?: ImagesResponse.SvgUsage
     ) => {
         const isGenerate = mode === 'generate';
         const currentModel = isGenerate ? genModel : editModel;
+        const outputFormat = isGenerate ? genOutputFormat : editOutputFormat;
         const newHistoryEntry: HistoryMetadata = {
             timestamp: Date.now(),
             images: images.map((img) => ({ filename: img.filename })),
@@ -362,11 +401,20 @@ export default function HomePage() {
             quality: isGenerate ? genQuality : editQuality,
             background: isGenerate ? genBackground : editBackground,
             moderation: isGenerate ? genModeration : editModeration,
-            output_format: isGenerate ? genOutputFormat : editOutputFormat,
+            output_format: outputFormat,
             prompt: isGenerate ? genPrompt : editPrompt,
             mode,
-            costDetails: calculateApiCost(usage, currentModel),
-            model: currentModel
+            costDetails: calculateApiCost(usage, currentModel, svgUsage && { model: genSvgModel, usage: svgUsage }),
+            model: currentModel,
+            ...(isGenerate
+                ? getConditionalParams(genModel, genOutputFormat, genComplexity, genFrameCount, genFrameDurationMs)
+                : getConditionalParams(
+                      editModel,
+                      editOutputFormat,
+                      editComplexity,
+                      editFrameCount,
+                      editFrameDurationMs
+                  ))
         };
 
         let newImageBatchPromises: Promise<{ path: string; filename: string } | null>[];
@@ -384,7 +432,7 @@ export default function HomePage() {
                     }
                     const byteArray = new Uint8Array(byteNumbers);
 
-                    const actualMimeType = getMimeTypeFromFormat(img.output_format);
+                    const actualMimeType = getMimeType(img.output_format);
                     const blob = new Blob([byteArray], { type: actualMimeType });
 
                     await db.images.put({ filename: img.filename, blob });
@@ -439,8 +487,15 @@ export default function HomePage() {
         }
         apiFormData.append('mode', mode);
 
-        // Add streaming parameters if enabled
-        if (enableStreaming) {
+        // The streaming preference is shared by both forms; apply it only where the current request allows it.
+        const isGenerateRequest = mode === 'generate';
+        if (
+            enableStreaming &&
+            !getStreamingBlockedReason(
+                isGenerateRequest ? genN[0] : editN[0],
+                isGenerateRequest ? genOutputFormat : editOutputFormat
+            )
+        ) {
             apiFormData.append('stream', 'true');
             apiFormData.append('partial_images', partialImages.toString());
         }
@@ -465,6 +520,15 @@ export default function HomePage() {
             }
             apiFormData.append('background', genBackground);
             apiFormData.append('moderation', genModeration);
+            Object.entries(
+                getConditionalParams(genModel, genOutputFormat, genComplexity, genFrameCount, genFrameDurationMs)
+            ).forEach(([key, value]) => apiFormData.append(key, String(value)));
+            if (genOutputFormat === 'svg') {
+                apiFormData.append('svg_model', genSvgModel);
+                if (genSvgEffort) {
+                    apiFormData.append('svg_reasoning_effort', genSvgEffort);
+                }
+            }
         } else {
             const editData = formData as EditingFormData;
             apiFormData.append('model', editModel);
@@ -485,12 +549,15 @@ export default function HomePage() {
             }
             apiFormData.append('background', editBackground);
             apiFormData.append('moderation', editModeration);
+            Object.entries(
+                getConditionalParams(editModel, editOutputFormat, editComplexity, editFrameCount, editFrameDurationMs)
+            ).forEach(([key, value]) => apiFormData.append(key, String(value)));
 
             editImageFiles.forEach((file, index) => {
                 apiFormData.append(`image_${index}`, file, file.name);
             });
-            if (editGeneratedMaskFile) {
-                apiFormData.append('mask', editGeneratedMaskFile, editGeneratedMaskFile.name);
+            if (editRegionFile) {
+                apiFormData.append(editRegionMode, editRegionFile, editRegionFile.name);
             }
         }
 
@@ -530,7 +597,7 @@ export default function HomePage() {
                                 if (event.type === 'partial_image') {
                                     // Update streaming preview with partial image
                                     const imageIndex = event.index ?? 0;
-                                    const mimeType = getMimeTypeFromFormat(
+                                    const mimeType = getMimeType(
                                         mode === 'generate' ? genOutputFormat : editOutputFormat
                                     );
                                     const dataUrl = `data:${mimeType};base64,${event.b64_json}`;
@@ -576,7 +643,7 @@ export default function HomePage() {
 
             if (result.images && result.images.length > 0) {
                 durationMs = Date.now() - startTime;
-                await processApiImages(result.images, result.usage, durationMs);
+                await processApiImages(result.images, result.usage, durationMs, result.svg_usage);
             } else {
                 setLatestImageBatch(null);
                 throw new Error('API response did not contain valid image data or filenames.');
@@ -837,10 +904,22 @@ export default function HomePage() {
                                 setCustomHeight={setGenCustomHeight}
                                 quality={genQuality}
                                 setQuality={setGenQuality}
+                                complexity={genComplexity}
+                                setComplexity={setGenComplexity}
                                 outputFormat={genOutputFormat}
                                 setOutputFormat={setGenOutputFormat}
                                 compression={genCompression}
                                 setCompression={setGenCompression}
+                                frameCount={genFrameCount}
+                                setFrameCount={setGenFrameCount}
+                                frameDurationMs={genFrameDurationMs}
+                                setFrameDurationMs={setGenFrameDurationMs}
+                                svg={{
+                                    model: genSvgModel,
+                                    setModel: setGenSvgModel,
+                                    effort: genSvgEffort,
+                                    setEffort: setGenSvgEffort
+                                }}
                                 background={genBackground}
                                 setBackground={setGenBackground}
                                 moderation={genModeration}
@@ -879,28 +958,36 @@ export default function HomePage() {
                                 setEditCustomHeight={setEditCustomHeight}
                                 editQuality={editQuality}
                                 setEditQuality={setEditQuality}
+                                editComplexity={editComplexity}
+                                setEditComplexity={setEditComplexity}
                                 editOutputFormat={editOutputFormat}
                                 setEditOutputFormat={setEditOutputFormat}
                                 editCompression={editCompression}
                                 setEditCompression={setEditCompression}
+                                editFrameCount={editFrameCount}
+                                setEditFrameCount={setEditFrameCount}
+                                editFrameDurationMs={editFrameDurationMs}
+                                setEditFrameDurationMs={setEditFrameDurationMs}
                                 editBackground={editBackground}
                                 setEditBackground={setEditBackground}
                                 editModeration={editModeration}
                                 setEditModeration={setEditModeration}
                                 editBrushSize={editBrushSize}
                                 setEditBrushSize={setEditBrushSize}
-                                editShowMaskEditor={editShowMaskEditor}
-                                setEditShowMaskEditor={setEditShowMaskEditor}
-                                editGeneratedMaskFile={editGeneratedMaskFile}
-                                setEditGeneratedMaskFile={setEditGeneratedMaskFile}
-                                editIsMaskSaved={editIsMaskSaved}
-                                setEditIsMaskSaved={setEditIsMaskSaved}
+                                editShowRegionEditor={editShowRegionEditor}
+                                setEditShowRegionEditor={setEditShowRegionEditor}
+                                editRegionMode={editRegionMode}
+                                setEditRegionMode={setEditRegionMode}
+                                editRegionFile={editRegionFile}
+                                setEditRegionFile={setEditRegionFile}
+                                editIsRegionSaved={editIsRegionSaved}
+                                setEditIsRegionSaved={setEditIsRegionSaved}
                                 editOriginalImageSize={editOriginalImageSize}
                                 setEditOriginalImageSize={setEditOriginalImageSize}
                                 editDrawnPoints={editDrawnPoints}
                                 setEditDrawnPoints={setEditDrawnPoints}
-                                editMaskPreviewUrl={editMaskPreviewUrl}
-                                setEditMaskPreviewUrl={setEditMaskPreviewUrl}
+                                editRegionPreviewUrl={editRegionPreviewUrl}
+                                setEditRegionPreviewUrl={setEditRegionPreviewUrl}
                                 enableStreaming={enableStreaming}
                                 setEnableStreaming={setEnableStreaming}
                                 partialImages={partialImages}

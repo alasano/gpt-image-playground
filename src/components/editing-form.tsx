@@ -1,6 +1,6 @@
 'use client';
 
-import { ImageOptions } from '@/components/image-options';
+import { ImageOptions, SLIDER_CLASS } from '@/components/image-options';
 import { ModeToggle } from '@/components/mode-toggle';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,14 +13,19 @@ import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
+    EDIT_INPUT_FORMATS,
     GPT_IMAGE_MODELS,
+    getMimeType,
+    getStreamingBlockedReason,
     type GptImageModel,
     type ImageBackground,
+    type ImageComplexity,
+    type ImageMode,
     type ImageModeration,
     type ImageOutputFormat,
     type ImageQuality
 } from '@/lib/models';
-import { validateCustomSize, type SizePreset } from '@/lib/size-utils';
+import { validateSizeSelection, type SizePreset } from '@/lib/size-utils';
 import { Upload, Eraser, Save, Loader2, X, ScanEye, UploadCloud, Lock, LockOpen, HelpCircle } from 'lucide-react';
 import Image from 'next/image';
 import * as React from 'react';
@@ -30,6 +35,11 @@ type DrawnPoint = {
     y: number;
     size: number;
 };
+
+/** A mask marks the editable area with transparency; markup is a visible annotation layer the model reads. */
+export type EditRegionMode = 'mask' | 'markup';
+
+const MARKUP_STROKE_COLOR = '#ff0000';
 
 export type EditingFormData = {
     prompt: string;
@@ -43,15 +53,14 @@ export type EditingFormData = {
     background: ImageBackground;
     moderation: ImageModeration;
     imageFiles: File[];
-    maskFile: File | null;
     model: GptImageModel;
 };
 
 type EditingFormProps = {
     onSubmit: (data: EditingFormData) => void;
     isLoading: boolean;
-    currentMode: 'generate' | 'edit';
-    onModeChange: (mode: 'generate' | 'edit') => void;
+    currentMode: ImageMode;
+    onModeChange: (mode: ImageMode) => void;
     isPasswordRequiredByBackend: boolean | null;
     clientPasswordHash: string | null;
     onOpenPasswordDialog: () => void;
@@ -74,28 +83,36 @@ type EditingFormProps = {
     setEditCustomHeight: React.Dispatch<React.SetStateAction<number>>;
     editQuality: EditingFormData['quality'];
     setEditQuality: React.Dispatch<React.SetStateAction<EditingFormData['quality']>>;
+    editComplexity: ImageComplexity;
+    setEditComplexity: React.Dispatch<React.SetStateAction<ImageComplexity>>;
     editOutputFormat: EditingFormData['output_format'];
     setEditOutputFormat: React.Dispatch<React.SetStateAction<EditingFormData['output_format']>>;
     editCompression: number[];
     setEditCompression: React.Dispatch<React.SetStateAction<number[]>>;
+    editFrameCount: number;
+    setEditFrameCount: React.Dispatch<React.SetStateAction<number>>;
+    editFrameDurationMs: number;
+    setEditFrameDurationMs: React.Dispatch<React.SetStateAction<number>>;
     editBackground: EditingFormData['background'];
     setEditBackground: React.Dispatch<React.SetStateAction<EditingFormData['background']>>;
     editModeration: EditingFormData['moderation'];
     setEditModeration: React.Dispatch<React.SetStateAction<EditingFormData['moderation']>>;
     editBrushSize: number[];
     setEditBrushSize: React.Dispatch<React.SetStateAction<number[]>>;
-    editShowMaskEditor: boolean;
-    setEditShowMaskEditor: React.Dispatch<React.SetStateAction<boolean>>;
-    editGeneratedMaskFile: File | null;
-    setEditGeneratedMaskFile: React.Dispatch<React.SetStateAction<File | null>>;
-    editIsMaskSaved: boolean;
-    setEditIsMaskSaved: React.Dispatch<React.SetStateAction<boolean>>;
+    editShowRegionEditor: boolean;
+    setEditShowRegionEditor: React.Dispatch<React.SetStateAction<boolean>>;
+    editRegionMode: EditRegionMode;
+    setEditRegionMode: React.Dispatch<React.SetStateAction<EditRegionMode>>;
+    editRegionFile: File | null;
+    setEditRegionFile: React.Dispatch<React.SetStateAction<File | null>>;
+    editIsRegionSaved: boolean;
+    setEditIsRegionSaved: React.Dispatch<React.SetStateAction<boolean>>;
     editOriginalImageSize: { width: number; height: number } | null;
     setEditOriginalImageSize: React.Dispatch<React.SetStateAction<{ width: number; height: number } | null>>;
     editDrawnPoints: DrawnPoint[];
     setEditDrawnPoints: React.Dispatch<React.SetStateAction<DrawnPoint[]>>;
-    editMaskPreviewUrl: string | null;
-    setEditMaskPreviewUrl: React.Dispatch<React.SetStateAction<string | null>>;
+    editRegionPreviewUrl: string | null;
+    setEditRegionPreviewUrl: React.Dispatch<React.SetStateAction<string | null>>;
     enableStreaming: boolean;
     setEnableStreaming: React.Dispatch<React.SetStateAction<boolean>>;
     partialImages: 1 | 2 | 3;
@@ -129,28 +146,36 @@ export function EditingForm({
     setEditCustomHeight,
     editQuality,
     setEditQuality,
+    editComplexity,
+    setEditComplexity,
     editOutputFormat,
     setEditOutputFormat,
     editCompression,
     setEditCompression,
+    editFrameCount,
+    setEditFrameCount,
+    editFrameDurationMs,
+    setEditFrameDurationMs,
     editBackground,
     setEditBackground,
     editModeration,
     setEditModeration,
     editBrushSize,
     setEditBrushSize,
-    editShowMaskEditor,
-    setEditShowMaskEditor,
-    editGeneratedMaskFile,
-    setEditGeneratedMaskFile,
-    editIsMaskSaved,
-    setEditIsMaskSaved,
+    editShowRegionEditor,
+    setEditShowRegionEditor,
+    editRegionMode,
+    setEditRegionMode,
+    editRegionFile,
+    setEditRegionFile,
+    editIsRegionSaved,
+    setEditIsRegionSaved,
     editOriginalImageSize,
     setEditOriginalImageSize,
     editDrawnPoints,
     setEditDrawnPoints,
-    editMaskPreviewUrl,
-    setEditMaskPreviewUrl,
+    editRegionPreviewUrl,
+    setEditRegionPreviewUrl,
     enableStreaming,
     setEnableStreaming,
     partialImages,
@@ -159,22 +184,43 @@ export function EditingForm({
     const [firstImagePreviewUrl, setFirstImagePreviewUrl] = React.useState<string | null>(null);
 
     const showCompression = editOutputFormat === 'jpeg' || editOutputFormat === 'webp';
-    const customSizeValidation =
-        editSize === 'custom' ? validateCustomSize(editCustomWidth, editCustomHeight) : { valid: true as const };
+    const customSizeValidation = validateSizeSelection(
+        editSize,
+        editCustomWidth,
+        editCustomHeight,
+        editOutputFormat,
+        editFrameCount,
+        editN[0]
+    );
     const customSizeInvalid = !customSizeValidation.valid;
+    const streamingBlockedReason = getStreamingBlockedReason(editN[0], editOutputFormat);
+    const streaming = enableStreaming && !streamingBlockedReason;
+    const regionLabel = editRegionMode === 'markup' ? 'Markup' : 'Mask';
+    const isGif = editOutputFormat === 'gif';
 
-    // Disable streaming when editN > 1 (OpenAI limitation)
+    // A saved file only fits the mode it was made for; the drawn strokes carry over.
+    const handleRegionModeChange = React.useCallback(
+        (value: string) => {
+            setEditRegionMode(value as EditRegionMode);
+            setEditRegionFile(null);
+            setEditIsRegionSaved(false);
+            setEditRegionPreviewUrl(null);
+        },
+        [setEditRegionMode, setEditRegionFile, setEditIsRegionSaved, setEditRegionPreviewUrl]
+    );
+
+    // The API rejects masks with GIF output; markup works.
     React.useEffect(() => {
-        if (editN[0] > 1 && enableStreaming) {
-            setEnableStreaming(false);
+        if (isGif && editRegionMode === 'mask') {
+            handleRegionModeChange('markup');
         }
-    }, [editN, enableStreaming, setEnableStreaming]);
+    }, [isGif, editRegionMode, handleRegionModeChange]);
 
     const canvasRef = React.useRef<HTMLCanvasElement>(null);
     const visualFeedbackCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
     const isDrawing = React.useRef(false);
     const lastPos = React.useRef<{ x: number; y: number } | null>(null);
-    const maskInputRef = React.useRef<HTMLInputElement>(null);
+    const regionInputRef = React.useRef<HTMLInputElement>(null);
 
     React.useEffect(() => {
         if (editOriginalImageSize) {
@@ -186,30 +232,32 @@ export function EditingForm({
         }
     }, [editOriginalImageSize]);
 
+    // Masks and markup apply to the first image, so only a change of the first image resets them.
+    const firstSourceUrl = sourceImagePreviewUrls[0];
     React.useEffect(() => {
         let cancelled = false;
 
         queueMicrotask(() => {
             if (cancelled) return;
 
-            setEditGeneratedMaskFile(null);
-            setEditIsMaskSaved(false);
+            setEditRegionFile(null);
+            setEditIsRegionSaved(false);
             setEditOriginalImageSize(null);
             setFirstImagePreviewUrl(null);
             setEditDrawnPoints([]);
-            setEditMaskPreviewUrl(null);
+            setEditRegionPreviewUrl(null);
 
-            if (imageFiles.length > 0 && sourceImagePreviewUrls.length > 0) {
+            if (firstSourceUrl) {
                 const img = new window.Image();
                 img.onload = () => {
                     if (!cancelled) {
                         setEditOriginalImageSize({ width: img.width, height: img.height });
                     }
                 };
-                img.src = sourceImagePreviewUrls[0];
-                setFirstImagePreviewUrl(sourceImagePreviewUrls[0]);
+                img.src = firstSourceUrl;
+                setFirstImagePreviewUrl(firstSourceUrl);
             } else {
-                setEditShowMaskEditor(false);
+                setEditShowRegionEditor(false);
             }
         });
 
@@ -217,14 +265,13 @@ export function EditingForm({
             cancelled = true;
         };
     }, [
-        imageFiles,
-        sourceImagePreviewUrls,
-        setEditGeneratedMaskFile,
-        setEditIsMaskSaved,
+        firstSourceUrl,
+        setEditRegionFile,
+        setEditIsRegionSaved,
         setEditOriginalImageSize,
         setEditDrawnPoints,
-        setEditMaskPreviewUrl,
-        setEditShowMaskEditor
+        setEditRegionPreviewUrl,
+        setEditShowRegionEditor
     ]);
 
     React.useEffect(() => {
@@ -268,8 +315,8 @@ export function EditingForm({
 
     const addPoint = (x: number, y: number) => {
         setEditDrawnPoints((prevPoints) => [...prevPoints, { x, y, size: editBrushSize[0] }]);
-        setEditIsMaskSaved(false);
-        setEditMaskPreviewUrl(null);
+        setEditIsRegionSaved(false);
+        setEditRegionPreviewUrl(null);
     };
 
     const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
@@ -301,8 +348,7 @@ export function EditingForm({
         lastPos.current = currentPos;
     };
 
-    const drawMaskStroke = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number) => {
-        ctx.fillStyle = 'black';
+    const drawStroke = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number) => {
         ctx.beginPath();
         ctx.arc(x, y, size, 0, Math.PI * 2);
         ctx.fill();
@@ -313,18 +359,18 @@ export function EditingForm({
         lastPos.current = null;
     };
 
-    const handleClearMask = () => {
+    const handleClearRegion = () => {
         setEditDrawnPoints([]);
-        setEditGeneratedMaskFile(null);
-        setEditIsMaskSaved(false);
-        setEditMaskPreviewUrl(null);
+        setEditRegionFile(null);
+        setEditIsRegionSaved(false);
+        setEditRegionPreviewUrl(null);
     };
 
-    const generateAndSaveMask = () => {
+    const generateAndSaveRegion = () => {
         if (!editOriginalImageSize || editDrawnPoints.length === 0) {
-            setEditGeneratedMaskFile(null);
-            setEditIsMaskSaved(false);
-            setEditMaskPreviewUrl(null);
+            setEditRegionFile(null);
+            setEditIsRegionSaved(false);
+            setEditRegionPreviewUrl(null);
             return;
         }
 
@@ -335,30 +381,36 @@ export function EditingForm({
 
         if (!offscreenCtx) return;
 
-        offscreenCtx.fillStyle = '#000000';
-        offscreenCtx.fillRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
-        offscreenCtx.globalCompositeOperation = 'destination-out';
+        if (editRegionMode === 'markup') {
+            // Opaque strokes on a transparent layer the size of the first image.
+            offscreenCtx.fillStyle = MARKUP_STROKE_COLOR;
+        } else {
+            // Opaque everywhere except the drawn areas, which become the editable region.
+            offscreenCtx.fillStyle = '#000000';
+            offscreenCtx.fillRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+            offscreenCtx.globalCompositeOperation = 'destination-out';
+        }
         editDrawnPoints.forEach((point) => {
-            drawMaskStroke(offscreenCtx, point.x, point.y, point.size);
+            drawStroke(offscreenCtx, point.x, point.y, point.size);
         });
 
         try {
             const dataUrl = offscreenCanvas.toDataURL('image/png');
-            setEditMaskPreviewUrl(dataUrl);
+            setEditRegionPreviewUrl(dataUrl);
         } catch (e) {
-            console.error('Error generating mask preview data URL:', e);
-            setEditMaskPreviewUrl(null);
+            console.error('Error generating region preview data URL:', e);
+            setEditRegionPreviewUrl(null);
         }
 
         offscreenCanvas.toBlob((blob) => {
             if (blob) {
-                const maskFile = new File([blob], 'generated-mask.png', { type: 'image/png' });
-                setEditGeneratedMaskFile(maskFile);
-                setEditIsMaskSaved(true);
+                const regionFile = new File([blob], `generated-${editRegionMode}.png`, { type: 'image/png' });
+                setEditRegionFile(regionFile);
+                setEditIsRegionSaved(true);
             } else {
-                console.error('Failed to generate mask blob.');
-                setEditIsMaskSaved(false);
-                setEditMaskPreviewUrl(null);
+                console.error('Failed to generate region blob.');
+                setEditIsRegionSaved(false);
+                setEditRegionPreviewUrl(null);
             }
         }, 'image/png');
     };
@@ -406,7 +458,7 @@ export function EditingForm({
         setSourceImagePreviewUrls((prevUrls) => prevUrls.filter((_, index) => index !== indexToRemove));
     };
 
-    const handleMaskFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const handleRegionFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file || !editOriginalImageSize) {
             event.target.value = '';
@@ -414,7 +466,7 @@ export function EditingForm({
         }
 
         if (file.type !== 'image/png') {
-            alert('Invalid file type. Please upload a PNG file for the mask.');
+            alert(`Invalid file type. Please upload a PNG file for the ${regionLabel.toLowerCase()}.`);
             event.target.value = '';
             return;
         }
@@ -426,24 +478,24 @@ export function EditingForm({
         img.onload = () => {
             if (img.width !== editOriginalImageSize.width || img.height !== editOriginalImageSize.height) {
                 alert(
-                    `Mask dimensions (${img.width}x${img.height}) must match the source image dimensions (${editOriginalImageSize.width}x${editOriginalImageSize.height}).`
+                    `${regionLabel} dimensions (${img.width}x${img.height}) must match the source image dimensions (${editOriginalImageSize.width}x${editOriginalImageSize.height}).`
                 );
                 URL.revokeObjectURL(objectUrl);
                 event.target.value = '';
                 return;
             }
 
-            setEditGeneratedMaskFile(file);
-            setEditIsMaskSaved(true);
+            setEditRegionFile(file);
+            setEditIsRegionSaved(true);
             setEditDrawnPoints([]);
 
             reader.onloadend = () => {
-                setEditMaskPreviewUrl(reader.result as string);
+                setEditRegionPreviewUrl(reader.result as string);
                 URL.revokeObjectURL(objectUrl);
             };
             reader.onerror = () => {
-                console.error('Error reading mask file for preview.');
-                setEditMaskPreviewUrl(null);
+                console.error('Error reading region file for preview.');
+                setEditRegionPreviewUrl(null);
                 URL.revokeObjectURL(objectUrl);
             };
             reader.readAsDataURL(file);
@@ -452,7 +504,7 @@ export function EditingForm({
         };
 
         img.onerror = () => {
-            alert('Failed to load the uploaded mask image to check dimensions.');
+            alert(`Failed to load the uploaded ${regionLabel.toLowerCase()} image to check dimensions.`);
             URL.revokeObjectURL(objectUrl);
             event.target.value = '';
         };
@@ -466,8 +518,8 @@ export function EditingForm({
             alert('Please select at least one image to edit.');
             return;
         }
-        if (editDrawnPoints.length > 0 && !editGeneratedMaskFile && !editIsMaskSaved) {
-            alert('Please save the mask you have drawn before submitting.');
+        if (editDrawnPoints.length > 0 && !editRegionFile && !editIsRegionSaved) {
+            alert(`Please save the ${regionLabel.toLowerCase()} you have drawn before submitting.`);
             return;
         }
         if (customSizeInvalid) {
@@ -485,7 +537,6 @@ export function EditingForm({
             background: editBackground,
             moderation: editModeration,
             imageFiles: imageFiles,
-            maskFile: editGeneratedMaskFile,
             model: editModel
         };
         if (showCompression) {
@@ -552,28 +603,27 @@ export function EditingForm({
                                     <div className='flex items-center gap-2'>
                                         <Checkbox
                                             id='edit-enable-streaming'
-                                            checked={enableStreaming}
+                                            checked={streaming}
                                             onCheckedChange={(checked) => setEnableStreaming(!!checked)}
-                                            disabled={isLoading || editN[0] > 1}
+                                            disabled={isLoading || !!streamingBlockedReason}
                                             className='border-white/40 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-white data-[state=checked]:bg-white data-[state=checked]:text-black'
                                         />
                                         <Label
                                             htmlFor='edit-enable-streaming'
-                                            className={`text-sm ${editN[0] > 1 ? 'cursor-not-allowed text-white/40' : 'cursor-pointer text-white/80'}`}>
+                                            className={`text-sm ${streamingBlockedReason ? 'cursor-not-allowed text-white/40' : 'cursor-pointer text-white/80'}`}>
                                             Enable Streaming
                                         </Label>
                                     </div>
                                 </TooltipTrigger>
                                 <TooltipContent className='max-w-[250px]'>
-                                    {editN[0] > 1
-                                        ? 'Streaming is only supported when generating a single image (n=1).'
-                                        : 'Shows partial preview images as they are generated, providing a more interactive experience.'}
+                                    {streamingBlockedReason ??
+                                        'Shows partial preview images as they are generated, providing a more interactive experience.'}
                                 </TooltipContent>
                             </Tooltip>
                         </div>
                     </div>
 
-                    {enableStreaming && (
+                    {streaming && (
                         <div className='space-y-3'>
                             <div className='flex items-center gap-2'>
                                 <Label className='text-white'>Preview Images</Label>
@@ -653,7 +703,7 @@ export function EditingForm({
                         <Input
                             id='image-files-input'
                             type='file'
-                            accept='image/png, image/jpeg, image/webp'
+                            accept={EDIT_INPUT_FORMATS.map(getMimeType).join(', ')}
                             multiple
                             onChange={handleImageFileChange}
                             disabled={isLoading || imageFiles.length >= maxImages}
@@ -687,30 +737,64 @@ export function EditingForm({
                     </div>
 
                     <div className='space-y-3'>
-                        <Label className='block text-white'>Mask</Label>
+                        <Label className='block text-white'>Mask or Markup</Label>
                         <Button
                             type='button'
                             variant='outline'
                             size='sm'
-                            onClick={() => setEditShowMaskEditor(!editShowMaskEditor)}
+                            onClick={() => setEditShowRegionEditor(!editShowRegionEditor)}
                             disabled={isLoading || !editOriginalImageSize}
                             className='w-full justify-start border-white/20 px-3 text-white/80 hover:bg-white/10 hover:text-white'>
-                            {editShowMaskEditor
-                                ? 'Close Mask Editor'
-                                : editGeneratedMaskFile
-                                  ? 'Edit Saved Mask'
-                                  : 'Create Mask'}
-                            {editIsMaskSaved && !editShowMaskEditor && (
+                            {editShowRegionEditor
+                                ? `Close ${regionLabel} Editor`
+                                : editRegionFile
+                                  ? `Edit Saved ${regionLabel}`
+                                  : 'Create Mask or Markup'}
+                            {editIsRegionSaved && !editShowRegionEditor && (
                                 <span className='ml-auto text-xs text-green-400'>(Saved)</span>
                             )}
                             <ScanEye className='mt-0.5' />
                         </Button>
 
-                        {editShowMaskEditor && firstImagePreviewUrl && editOriginalImageSize && (
+                        {editShowRegionEditor && firstImagePreviewUrl && editOriginalImageSize && (
                             <div className='space-y-3 rounded-md border border-white/20 bg-black p-3'>
+                                <RadioGroup
+                                    value={editRegionMode}
+                                    onValueChange={handleRegionModeChange}
+                                    disabled={isLoading}
+                                    className='flex gap-x-5'>
+                                    <div className='flex items-center space-x-2'>
+                                        <RadioGroupItem
+                                            value='mask'
+                                            id='edit-region-mask'
+                                            disabled={isGif}
+                                            className='border-white/40 text-white data-[state=checked]:border-white data-[state=checked]:text-white'
+                                        />
+                                        <Label
+                                            htmlFor='edit-region-mask'
+                                            className={
+                                                isGif
+                                                    ? 'cursor-not-allowed text-white/40'
+                                                    : 'cursor-pointer text-white/80'
+                                            }>
+                                            Mask
+                                        </Label>
+                                    </div>
+                                    <div className='flex items-center space-x-2'>
+                                        <RadioGroupItem
+                                            value='markup'
+                                            id='edit-region-markup'
+                                            className='border-white/40 text-white data-[state=checked]:border-white data-[state=checked]:text-white'
+                                        />
+                                        <Label htmlFor='edit-region-markup' className='cursor-pointer text-white/80'>
+                                            Markup
+                                        </Label>
+                                    </div>
+                                </RadioGroup>
                                 <p className='text-xs text-white/60'>
-                                    Draw on the image below to mark areas for editing (drawn areas become transparent in
-                                    the mask).
+                                    {editRegionMode === 'markup'
+                                        ? 'Circle or sketch on the image to show where the change goes, and describe the change in the prompt. Applies to the first image.'
+                                        : 'Draw on the image below to mark areas for editing (drawn areas become transparent in the mask).'}
                                 </p>
                                 <div
                                     className='relative mx-auto w-full overflow-hidden rounded border border-white/10'
@@ -720,7 +804,7 @@ export function EditingForm({
                                     }}>
                                     <Image
                                         src={firstImagePreviewUrl}
-                                        alt='Image preview for masking'
+                                        alt='Image preview for drawing'
                                         width={editOriginalImageSize.width}
                                         height={editOriginalImageSize.height}
                                         className='block h-auto w-full'
@@ -762,17 +846,17 @@ export function EditingForm({
                                         type='button'
                                         variant='outline'
                                         size='sm'
-                                        onClick={() => maskInputRef.current?.click()}
+                                        onClick={() => regionInputRef.current?.click()}
                                         disabled={isLoading || !editOriginalImageSize}
                                         className='mr-auto border-white/20 text-white/80 hover:bg-white/10 hover:text-white'>
-                                        <UploadCloud className='mr-1.5 h-4 w-4' /> Upload Mask
+                                        <UploadCloud className='mr-1.5 h-4 w-4' /> Upload {regionLabel}
                                     </Button>
                                     <Input
-                                        ref={maskInputRef}
-                                        id='mask-file-input'
+                                        ref={regionInputRef}
+                                        id='region-file-input'
                                         type='file'
                                         accept='image/png'
-                                        onChange={handleMaskFileChange}
+                                        onChange={handleRegionFileChange}
                                         className='sr-only'
                                     />
                                     <div className='flex gap-2'>
@@ -780,7 +864,7 @@ export function EditingForm({
                                             type='button'
                                             variant='outline'
                                             size='sm'
-                                            onClick={handleClearMask}
+                                            onClick={handleClearRegion}
                                             disabled={isLoading}
                                             className='border-white/20 text-white/80 hover:bg-white/10 hover:text-white'>
                                             <Eraser className='mr-1.5 h-4 w-4' /> Clear
@@ -789,22 +873,22 @@ export function EditingForm({
                                             type='button'
                                             variant='default'
                                             size='sm'
-                                            onClick={generateAndSaveMask}
+                                            onClick={generateAndSaveRegion}
                                             disabled={isLoading || editDrawnPoints.length === 0}
                                             className='bg-white text-black hover:bg-white/90 disabled:opacity-50'>
-                                            <Save className='mr-1.5 h-4 w-4' /> Save Mask
+                                            <Save className='mr-1.5 h-4 w-4' /> Save {regionLabel}
                                         </Button>
                                     </div>
                                 </div>
-                                {editMaskPreviewUrl && (
+                                {editRegionPreviewUrl && (
                                     <div className='mt-3 border-t border-white/10 pt-3 text-center'>
                                         <Label className='mb-1.5 block text-sm text-white'>
-                                            Generated Mask Preview:
+                                            Generated {regionLabel} Preview:
                                         </Label>
                                         <div className='inline-block rounded border border-gray-300 bg-white p-1'>
                                             <Image
-                                                src={editMaskPreviewUrl}
-                                                alt='Generated mask preview'
+                                                src={editRegionPreviewUrl}
+                                                alt={`Generated ${regionLabel.toLowerCase()} preview`}
                                                 width={0}
                                                 height={134}
                                                 className='block max-w-full'
@@ -814,18 +898,22 @@ export function EditingForm({
                                         </div>
                                     </div>
                                 )}
-                                {editIsMaskSaved && !editMaskPreviewUrl && (
+                                {editIsRegionSaved && !editRegionPreviewUrl && (
                                     <p className='pt-1 text-center text-xs text-yellow-400'>
-                                        Generating mask preview...
+                                        Generating {regionLabel.toLowerCase()} preview...
                                     </p>
                                 )}
-                                {editIsMaskSaved && editMaskPreviewUrl && (
-                                    <p className='pt-1 text-center text-xs text-green-400'>Mask saved successfully!</p>
+                                {editIsRegionSaved && editRegionPreviewUrl && (
+                                    <p className='pt-1 text-center text-xs text-green-400'>
+                                        {regionLabel} saved successfully!
+                                    </p>
                                 )}
                             </div>
                         )}
-                        {!editShowMaskEditor && editGeneratedMaskFile && (
-                            <p className='pt-1 text-xs text-green-400'>Mask applied: {editGeneratedMaskFile.name}</p>
+                        {!editShowRegionEditor && editRegionFile && (
+                            <p className='pt-1 text-xs text-green-400'>
+                                {regionLabel} applied: {editRegionFile.name}
+                            </p>
                         )}
                     </div>
 
@@ -841,12 +929,12 @@ export function EditingForm({
                             value={editN}
                             onValueChange={setEditN}
                             disabled={isLoading}
-                            className='mt-3 [&>button]:border-black [&>button]:bg-white [&>button]:ring-offset-black [&>span:first-child]:h-1 [&>span:first-child>span]:bg-white'
+                            className={SLIDER_CLASS}
                         />
                     </div>
 
                     <ImageOptions
-                        idPrefix='edit'
+                        mode='edit'
                         model={editModel}
                         disabled={isLoading}
                         size={editSize}
@@ -858,12 +946,18 @@ export function EditingForm({
                         sizeValidation={customSizeValidation}
                         quality={editQuality}
                         setQuality={setEditQuality}
+                        complexity={editComplexity}
+                        setComplexity={setEditComplexity}
                         background={editBackground}
                         setBackground={setEditBackground}
                         outputFormat={editOutputFormat}
                         setOutputFormat={setEditOutputFormat}
                         compression={editCompression}
                         setCompression={setEditCompression}
+                        frameCount={editFrameCount}
+                        setFrameCount={setEditFrameCount}
+                        frameDurationMs={editFrameDurationMs}
+                        setFrameDurationMs={setEditFrameDurationMs}
                         moderation={editModeration}
                         setModeration={setEditModeration}
                     />

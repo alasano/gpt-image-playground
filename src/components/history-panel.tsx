@@ -14,7 +14,7 @@ import {
     DialogFooter,
     DialogClose
 } from '@/components/ui/dialog';
-import { getModelRates, tokensToUsd, type ModelRates } from '@/lib/cost-utils';
+import { getModelRates, getSvgWriterRates, tokensToUsd, type ModelRates } from '@/lib/cost-utils';
 import { GPT_IMAGE_MODELS, type GptImageModel } from '@/lib/models';
 import { cn } from '@/lib/utils';
 import {
@@ -292,6 +292,10 @@ function HistoryPanelImpl({
                                                     </DialogHeader>
                                                     {(() => {
                                                         const rates = getModelRates(model);
+                                                        const svgWriter = item.costDetails.svg_writer && {
+                                                            ...item.costDetails.svg_writer,
+                                                            rates: getSvgWriterRates(item.costDetails.svg_writer.model)
+                                                        };
                                                         return (
                                                             <>
                                                                 <div className='space-y-1 pt-1 text-xs text-neutral-400'>
@@ -310,6 +314,23 @@ function HistoryPanelImpl({
                                                                             / 1M tokens
                                                                         </li>
                                                                     </ul>
+                                                                    {svgWriter && (
+                                                                        <>
+                                                                            <p>Pricing for {svgWriter.model}:</p>
+                                                                            <ul className='list-disc pl-4'>
+                                                                                <li>
+                                                                                    Input: $
+                                                                                    {svgWriter.rates.inputPerMillion} /
+                                                                                    1M tokens
+                                                                                </li>
+                                                                                <li>
+                                                                                    Output: $
+                                                                                    {svgWriter.rates.outputPerMillion} /
+                                                                                    1M tokens
+                                                                                </li>
+                                                                            </ul>
+                                                                        </>
+                                                                    )}
                                                                 </div>
                                                                 <div className='space-y-2 py-4 text-sm text-neutral-300'>
                                                                     <div className='flex justify-between'>
@@ -350,6 +371,37 @@ function HistoryPanelImpl({
                                                                             )
                                                                         </span>
                                                                     </div>
+                                                                    {svgWriter && (
+                                                                        <>
+                                                                            <div className='flex justify-between'>
+                                                                                <span>
+                                                                                    SVG Writer Input ({svgWriter.model}
+                                                                                    ):
+                                                                                </span>{' '}
+                                                                                <span>
+                                                                                    {svgWriter.input_tokens.toLocaleString()}{' '}
+                                                                                    (~$
+                                                                                    {formatUsd(
+                                                                                        svgWriter.input_tokens,
+                                                                                        svgWriter.rates.inputPerMillion
+                                                                                    )}
+                                                                                    )
+                                                                                </span>
+                                                                            </div>
+                                                                            <div className='flex justify-between'>
+                                                                                <span>SVG Writer Output:</span>{' '}
+                                                                                <span>
+                                                                                    {svgWriter.output_tokens.toLocaleString()}{' '}
+                                                                                    (~$
+                                                                                    {formatUsd(
+                                                                                        svgWriter.output_tokens,
+                                                                                        svgWriter.rates.outputPerMillion
+                                                                                    )}
+                                                                                    )
+                                                                                </span>
+                                                                            </div>
+                                                                        </>
+                                                                    )}
                                                                     <hr className='my-2 border-neutral-700' />
                                                                     <div className='flex justify-between font-medium text-white'>
                                                                         <span>Total Estimated Cost:</span>
@@ -391,6 +443,18 @@ function HistoryPanelImpl({
                                         <p>
                                             <span className='font-medium text-white/80'>Quality:</span> {item.quality}
                                         </p>
+                                        {item.complexity && (
+                                            <p>
+                                                <span className='font-medium text-white/80'>Complexity:</span>{' '}
+                                                {item.complexity}
+                                            </p>
+                                        )}
+                                        {item.frame_count && (
+                                            <p>
+                                                <span className='font-medium text-white/80'>Frames:</span>{' '}
+                                                {item.frame_count} × {item.frame_duration_ms}ms
+                                            </p>
+                                        )}
                                         <p>
                                             <span className='font-medium text-white/80'>BG:</span> {item.background}
                                         </p>

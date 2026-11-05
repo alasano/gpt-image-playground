@@ -1,6 +1,6 @@
 'use client';
 
-import { ImageOptions } from '@/components/image-options';
+import { ImageOptions, SLIDER_CLASS, type SvgOptions } from '@/components/image-options';
 import { ModeToggle } from '@/components/mode-toggle';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,13 +13,16 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
     GPT_IMAGE_MODELS,
+    getStreamingBlockedReason,
     type GptImageModel,
     type ImageBackground,
+    type ImageComplexity,
+    type ImageMode,
     type ImageModeration,
     type ImageOutputFormat,
     type ImageQuality
 } from '@/lib/models';
-import { validateCustomSize, type SizePreset } from '@/lib/size-utils';
+import { validateSizeSelection, type SizePreset } from '@/lib/size-utils';
 import { HelpCircle, Loader2, Lock, LockOpen } from 'lucide-react';
 import * as React from 'react';
 
@@ -40,8 +43,8 @@ export type GenerationFormData = {
 type GenerationFormProps = {
     onSubmit: (data: GenerationFormData) => void;
     isLoading: boolean;
-    currentMode: 'generate' | 'edit';
-    onModeChange: (mode: 'generate' | 'edit') => void;
+    currentMode: ImageMode;
+    onModeChange: (mode: ImageMode) => void;
     isPasswordRequiredByBackend: boolean | null;
     clientPasswordHash: string | null;
     onOpenPasswordDialog: () => void;
@@ -59,10 +62,17 @@ type GenerationFormProps = {
     setCustomHeight: React.Dispatch<React.SetStateAction<number>>;
     quality: GenerationFormData['quality'];
     setQuality: React.Dispatch<React.SetStateAction<GenerationFormData['quality']>>;
+    complexity: ImageComplexity;
+    setComplexity: React.Dispatch<React.SetStateAction<ImageComplexity>>;
     outputFormat: GenerationFormData['output_format'];
     setOutputFormat: React.Dispatch<React.SetStateAction<GenerationFormData['output_format']>>;
     compression: number[];
     setCompression: React.Dispatch<React.SetStateAction<number[]>>;
+    frameCount: number;
+    setFrameCount: React.Dispatch<React.SetStateAction<number>>;
+    frameDurationMs: number;
+    setFrameDurationMs: React.Dispatch<React.SetStateAction<number>>;
+    svg: SvgOptions;
     background: GenerationFormData['background'];
     setBackground: React.Dispatch<React.SetStateAction<GenerationFormData['background']>>;
     moderation: GenerationFormData['moderation'];
@@ -95,10 +105,17 @@ export function GenerationForm({
     setCustomHeight,
     quality,
     setQuality,
+    complexity,
+    setComplexity,
     outputFormat,
     setOutputFormat,
     compression,
     setCompression,
+    frameCount,
+    setFrameCount,
+    frameDurationMs,
+    setFrameDurationMs,
+    svg,
     background,
     setBackground,
     moderation,
@@ -109,16 +126,18 @@ export function GenerationForm({
     setPartialImages
 }: GenerationFormProps) {
     const showCompression = outputFormat === 'jpeg' || outputFormat === 'webp';
-    const customSizeValidation =
-        size === 'custom' ? validateCustomSize(customWidth, customHeight) : { valid: true as const };
+    const customSizeValidation = validateSizeSelection(size, customWidth, customHeight, outputFormat, frameCount, n[0]);
     const customSizeInvalid = !customSizeValidation.valid;
+    const streamingBlockedReason = getStreamingBlockedReason(n[0], outputFormat);
+    const streaming = enableStreaming && !streamingBlockedReason;
+    const isSvg = outputFormat === 'svg';
 
-    // Disable streaming when n > 1 (OpenAI limitation)
+    // SVG output is limited to one image per request.
     React.useEffect(() => {
-        if (n[0] > 1 && enableStreaming) {
-            setEnableStreaming(false);
+        if (isSvg && n[0] !== 1) {
+            setN([1]);
         }
-    }, [n, enableStreaming, setEnableStreaming]);
+    }, [isSvg, n, setN]);
 
     const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -195,28 +214,27 @@ export function GenerationForm({
                                     <div className='flex items-center gap-2'>
                                         <Checkbox
                                             id='enable-streaming'
-                                            checked={enableStreaming}
+                                            checked={streaming}
                                             onCheckedChange={(checked) => setEnableStreaming(!!checked)}
-                                            disabled={isLoading || n[0] > 1}
+                                            disabled={isLoading || !!streamingBlockedReason}
                                             className='border-white/40 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-white data-[state=checked]:bg-white data-[state=checked]:text-black'
                                         />
                                         <Label
                                             htmlFor='enable-streaming'
-                                            className={`text-sm ${n[0] > 1 ? 'cursor-not-allowed text-white/40' : 'cursor-pointer text-white/80'}`}>
+                                            className={`text-sm ${streamingBlockedReason ? 'cursor-not-allowed text-white/40' : 'cursor-pointer text-white/80'}`}>
                                             Enable Streaming
                                         </Label>
                                     </div>
                                 </TooltipTrigger>
                                 <TooltipContent className='max-w-[250px]'>
-                                    {n[0] > 1
-                                        ? 'Streaming is only supported when generating a single image (n=1).'
-                                        : 'Shows partial preview images as they are generated, providing a more interactive experience.'}
+                                    {streamingBlockedReason ??
+                                        'Shows partial preview images as they are generated, providing a more interactive experience.'}
                                 </TooltipContent>
                             </Tooltip>
                         </div>
                     </div>
 
-                    {enableStreaming && (
+                    {streaming && (
                         <div className='space-y-3'>
                             <div className='flex items-center gap-2'>
                                 <Label className='text-white'>Preview Images</Label>
@@ -294,13 +312,13 @@ export function GenerationForm({
                             step={1}
                             value={n}
                             onValueChange={setN}
-                            disabled={isLoading}
-                            className='mt-3 [&>button]:border-black [&>button]:bg-white [&>button]:ring-offset-black [&>span:first-child]:h-1 [&>span:first-child>span]:bg-white'
+                            disabled={isLoading || isSvg}
+                            className={SLIDER_CLASS}
                         />
                     </div>
 
                     <ImageOptions
-                        idPrefix='gen'
+                        mode='generate'
                         model={model}
                         disabled={isLoading}
                         size={size}
@@ -312,12 +330,19 @@ export function GenerationForm({
                         sizeValidation={customSizeValidation}
                         quality={quality}
                         setQuality={setQuality}
+                        complexity={complexity}
+                        setComplexity={setComplexity}
                         background={background}
                         setBackground={setBackground}
                         outputFormat={outputFormat}
                         setOutputFormat={setOutputFormat}
                         compression={compression}
                         setCompression={setCompression}
+                        frameCount={frameCount}
+                        setFrameCount={setFrameCount}
+                        frameDurationMs={frameDurationMs}
+                        setFrameDurationMs={setFrameDurationMs}
+                        svg={svg}
                         moderation={moderation}
                         setModeration={setModeration}
                     />
